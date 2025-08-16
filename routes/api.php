@@ -1,0 +1,23 @@
+<?php
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\api\AuthController;
+use App\Http\Controllers\api\GoalController;
+
+
+// Public routes (no authentication required)
+// Route::get('test', [AuthController::class, 'index']);
+Route::post('register', [AuthController::class, 'store']);
+Route::post('login', [AuthController::class, 'login']);
+Route::post('store-goal', [GoalController::class, 'store']);
+
+// Protected routes (authentication required)
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('user', [AuthController::class, 'user']);
+    Route::post('logout', [AuthController::class, 'logout']);
+});
+
+// Development route (remove in production)
+Route::get('users', [AuthController::class, 'getUser']);
+

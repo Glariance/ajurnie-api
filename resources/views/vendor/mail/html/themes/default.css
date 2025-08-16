@@ -1,0 +1,85 @@
+/* === Email Layout Custom Styles === */
+
+body {
+  background-color: rgb(55, 65, 81);
+  color: #f9fafb;
+  font-family: 'Segoe UI', Tahoma, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+.wrapper {
+  padding: 40px 20px;
+}
+
+.email-card {
+  background-color: #1f2937; /* slightly lighter than bg */
+  border-radius: 12px;
+  max-width: 600px;
+  margin: auto;
+  padding: 24px 32px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+.email-card h2 {
+  color: rgb(220, 38, 38);
+  font-size: 22px;
+  margin-bottom: 10px;
+}
+
+.email-card p {
+  color: #d1d5db;
+  font-size: 15px;
+  margin-bottom: 20px;
+}
+
+/* Table styles */
+.table-wrapper {
+  background: #111827;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th {
+  background-color: rgb(220, 38, 38);
+  color: white;
+  text-align: left;
+  padding: 10px;
+}
+
+td {
+  padding: 10px;
+  border-top: 1px solid #374151;
+}
+
+tr:nth-child(even) {
+  background-color: #1f2937;
+}
+
+/* Footer */
+.footer {
+  text-align: center;
+  margin-top: 30px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+/* Buttons (if any) */
+.btn-primary {
+  background-color: rgb(220, 38, 38);
+  color: white;
+  padding: 10px 18px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn-primary:hover {
+  background-color: rgb(185, 28, 28);
+}
