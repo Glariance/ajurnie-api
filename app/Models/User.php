@@ -24,6 +24,13 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
+        'type',
+        'stripe_customer_id',
+        'stripe_subscription_id',
+        'trial_ends_at',
+        'remember_token',
+        'payment_method', // Stripe payment method ID
+        'price_id', // Price ID for the subscription
     ];
 
     /**

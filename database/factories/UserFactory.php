@@ -24,7 +24,16 @@ class UserFactory extends Factory
     public function definition(): array
     {
         return [
-            'name' => fake()->name(),
+            'fullname' => fake()->name(),
+            'type' => 'admin', // default type
+            'role' => 'novice', // default role
+            'stripe_customer_id' => null,
+            'stripe_subscription_id' => null,
+            'trial_ends_at' => null,
+            'remember_token' => Str::random(10),
+            // Use the static password if set, otherwise generate a new one
+            'password' => static::$password ??= Hash::make('password'),
+            // Generate a unique email address
             'email' => fake()->unique()->safeEmail(),
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),

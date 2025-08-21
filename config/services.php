@@ -14,6 +14,14 @@ return [
     |
     */
 
+    'stripe' => [
+        'secret' => env('STRIPE_SECRET'),
+        'novice_price_id' => env('NOVICE_PRICE_ID'),
+        'trainer_price_id' => env('TRAINER_PRICE_ID'),
+        'secret' => env('STRIPE_SECRET'),
+    ],
+
+
     'postmark' => [
         'token' => env('POSTMARK_TOKEN'),
     ],

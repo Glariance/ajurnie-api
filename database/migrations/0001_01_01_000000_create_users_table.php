@@ -13,11 +13,18 @@ return new class extends Migration
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
+            $table->string('fullname'); // changed from 'name' to 'fullname' to match your code
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
-            $table->string('role');
+            $table->enum('role', ['novice', 'trainer']);
+            $table->enum('type', ['admin', 'user'])->default('user');
+
+            // Stripe fields
+            $table->string('stripe_customer_id')->nullable();
+            $table->string('stripe_subscription_id')->nullable();
+            $table->timestamp('trial_ends_at')->nullable();
+
             $table->rememberToken();
             $table->timestamps();
         });
@@ -37,6 +44,8 @@ return new class extends Migration
             $table->integer('last_activity')->index();
         });
     }
+
+
 
     /**
      * Reverse the migrations.
