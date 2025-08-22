@@ -62,6 +62,7 @@ class AuthController extends Controller
             'payment_method' => 'required|string', // stripe payment method id
         ]);
 
+
         Stripe::setApiKey(config('services.stripe.secret'));
 
         // Create customer
@@ -72,7 +73,6 @@ class AuthController extends Controller
             'invoice_settings' => [
                 'default_payment_method' => $validated['payment_method'],
             ],
-
         ]);
 
         // ✅ Step 1: Charge $1 immediately
@@ -83,14 +83,21 @@ class AuthController extends Controller
             'description' => 'Initial registration fee',
         ]);
 
-        // Create and pay invoice immediately
         $invoice = \Stripe\Invoice::create([
             'customer' => $customer->id,
             'auto_advance' => true,
         ]);
+
         $invoice->pay();
 
-        // ✅ Step 2: Create subscription with 7-day trial
+        // ✅ Step 2: Create a one-time coupon for $1 off
+        $coupon = \Stripe\Coupon::create([
+            'currency' => 'usd',
+            'amount_off' => 100, // $1 off
+            'duration' => 'once', // only apply to first subscription invoice
+        ]);
+
+        // ✅ Step 3: Create subscription with 7-day trial + coupon
         $priceId = $validated['role'] === 'trainer'
             ? config('services.stripe.trainer_price_id')
             : config('services.stripe.novice_price_id');
@@ -98,19 +105,23 @@ class AuthController extends Controller
         $subscription = Subscription::create([
             'customer' => $customer->id,
             'items' => [['price' => $priceId]],
-            'trial_period_days' => 7, // free trial
+            // 'trial_period_days' => 7,
+            'trial_end' => now()->addMinutes(2)->timestamp,
+            'discounts' => [['coupon' => $coupon->id]],
             'expand' => ['latest_invoice.payment_intent'],
         ]);
 
-        // Save user
+        // Save user in DB
         $user = User::create([
             'fullname' => $validated['fullname'],
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
             'role' => $validated['role'],
+            'type' => User::ROLE_USER,
             'stripe_customer_id' => $customer->id,
             'stripe_subscription_id' => $subscription->id,
-            'trial_ends_at' => now()->addDays(7),
+            // 'trial_ends_at' => now()->addDays(7),
+            'trial_ends_at' => now()->addMinutes(2)->toDateTimeString(),
         ]);
 
         $token = $user->createToken('token')->plainTextToken;
@@ -121,6 +132,7 @@ class AuthController extends Controller
             'subscription' => $subscription,
         ], 201);
     }
+
 
 
 
