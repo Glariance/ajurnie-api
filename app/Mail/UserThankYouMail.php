@@ -28,7 +28,7 @@ class UserThankYouMail extends Mailable
     public function build()
     {
         return $this->subject('Your Goal Submission')
-            ->view('emails.user_goal') // This uses our custom HTML view
+            ->view('emails.user.user_goal') // This uses our custom HTML view
             ->with([
                 'goal' => $this->goal,
             ]);

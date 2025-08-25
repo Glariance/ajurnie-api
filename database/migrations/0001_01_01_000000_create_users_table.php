@@ -19,6 +19,7 @@ return new class extends Migration
             $table->string('password');
             $table->enum('role', ['novice', 'trainer']);
             $table->enum('type', ['admin', 'user'])->default('user');
+            $table->boolean('is_paid')->default(false);
 
             // Stripe fields
             $table->string('stripe_customer_id')->nullable();

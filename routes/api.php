@@ -4,7 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\api\AuthController;
 use App\Http\Controllers\api\GoalController;
-
+use App\Http\Controllers\StripeWebhookController;
 
 // Public routes (no authentication required)
 // Route::get('test', [AuthController::class, 'index']);
@@ -21,3 +21,4 @@ Route::middleware('auth:sanctum')->group(function () {
 // Development route (remove in production)
 Route::get('users', [AuthController::class, 'getUser']);
 
+Route::post('/stripe/webhook', [StripeWebhookController::class, 'handleWebhook']);

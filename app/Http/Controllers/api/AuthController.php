@@ -7,13 +7,12 @@ use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Stripe\Stripe;
 use Stripe\Customer;
 use Stripe\Subscription;
 use Stripe\InvoiceItem;
-
-
-
+use Illuminate\Support\Facades\Mail;
 
 
 class AuthController extends Controller
@@ -26,7 +25,7 @@ class AuthController extends Controller
         //
         return response()->json([
             'Welcome to the authentication API from index method'
-
+            // app()->environment()
         ]);
     }
 
@@ -59,79 +58,103 @@ class AuthController extends Controller
             'email' => 'required|string|email|unique:users',
             'password' => 'required|string|min:6|confirmed',
             'role' => 'required|string|in:novice,trainer',
-            'payment_method' => 'required|string', // stripe payment method id
+            'payment_method' => 'required|string',
         ]);
-
 
         Stripe::setApiKey(config('services.stripe.secret'));
 
-        // Create customer
-        $customer = Customer::create([
-            'email' => $validated['email'],
-            'name'  => $validated['fullname'],
-            'payment_method' => $validated['payment_method'],
-            'invoice_settings' => [
-                'default_payment_method' => $validated['payment_method'],
-            ],
-        ]);
+        DB::beginTransaction();
 
-        // ✅ Step 1: Charge $1 immediately
-        InvoiceItem::create([
-            'customer' => $customer->id,
-            'amount' => 100, // $1 in cents
-            'currency' => 'usd',
-            'description' => 'Initial registration fee',
-        ]);
+        try {
+            // ✅ Step 1: Create Stripe customer
+            $customer = Customer::create([
+                'email' => $validated['email'],
+                'name'  => $validated['fullname'],
+                'payment_method' => $validated['payment_method'],
+                'invoice_settings' => [
+                    'default_payment_method' => $validated['payment_method'],
+                ],
+            ]);
 
-        $invoice = \Stripe\Invoice::create([
-            'customer' => $customer->id,
-            'auto_advance' => true,
-        ]);
+            // ✅ Step 2: Charge $1 upfront (registration fee)
+            InvoiceItem::create([
+                'customer' => $customer->id,
+                'amount' => 100, // $1
+                'currency' => 'usd',
+                'description' => 'Initial registration fee',
+            ]);
 
-        $invoice->pay();
+            $invoice = \Stripe\Invoice::create([
+                'customer' => $customer->id,
+                'auto_advance' => true,
+            ]);
+            $invoice->pay();
 
-        // ✅ Step 2: Create a one-time coupon for $1 off
-        $coupon = \Stripe\Coupon::create([
-            'currency' => 'usd',
-            'amount_off' => 100, // $1 off
-            'duration' => 'once', // only apply to first subscription invoice
-        ]);
+            // ✅ Step 3: Create one-time $1 discount coupon
+            $coupon = \Stripe\Coupon::create([
+                'currency' => 'usd',
+                'amount_off' => 100,   // $1 off
+                'duration' => 'once',  // apply only to first subscription invoice
+            ]);
 
-        // ✅ Step 3: Create subscription with 7-day trial + coupon
-        $priceId = $validated['role'] === 'trainer'
-            ? config('services.stripe.trainer_price_id')
-            : config('services.stripe.novice_price_id');
+            // ✅ Step 4: Pick plan price based on role
+            $priceId = $validated['role'] === 'trainer'
+                ? config('services.stripe.trainer_price_id')
+                : config('services.stripe.novice_price_id');
 
-        $subscription = Subscription::create([
-            'customer' => $customer->id,
-            'items' => [['price' => $priceId]],
-            // 'trial_period_days' => 7,
-            'trial_end' => now()->addMinutes(2)->timestamp,
-            'discounts' => [['coupon' => $coupon->id]],
-            'expand' => ['latest_invoice.payment_intent'],
-        ]);
+            // ✅ Step 5: Trial period (2 minutes in test, 7 days in production)
+            $trialEnd = app()->environment('production')
+                ? now()->addDays(7)->timestamp   // real trial
+                : now()->addMinutes(2)->timestamp; // quick testing trial
 
-        // Save user in DB
-        $user = User::create([
-            'fullname' => $validated['fullname'],
-            'email' => $validated['email'],
-            'password' => Hash::make($validated['password']),
-            'role' => $validated['role'],
-            'type' => User::ROLE_USER,
-            'stripe_customer_id' => $customer->id,
-            'stripe_subscription_id' => $subscription->id,
-            // 'trial_ends_at' => now()->addDays(7),
-            'trial_ends_at' => now()->addMinutes(2)->toDateTimeString(),
-        ]);
+            $subscription = Subscription::create([
+                'customer' => $customer->id,
+                'items' => [['price' => $priceId]],
+                'trial_end' => $trialEnd,
+                'discounts' => [['coupon' => $coupon->id]], // $1 off first bill
+                'expand' => ['latest_invoice.payment_intent'],
+            ]);
 
-        $token = $user->createToken('token')->plainTextToken;
+            // ✅ Step 6: Save user in DB
+            $user = User::create([
+                'fullname' => $validated['fullname'],
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                'role' => $validated['role'],
+                'type' => User::ROLE_USER,
+                'stripe_customer_id' => $customer->id,
+                'stripe_subscription_id' => $subscription->id,
+                'trial_ends_at' => date('Y-m-d H:i:s', $trialEnd),
+            ]);
 
-        return response()->json([
-            'user' => $user,
-            'token' => $token,
-            'subscription' => $subscription,
-        ], 201);
+            DB::commit();
+
+            $token = $user->createToken('token')->plainTextToken;
+
+            return response()->json([
+                'user' => $user,
+                'token' => $token,
+                'subscription' => $subscription,
+            ], 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            if (!empty($customer->id)) {
+                try {
+                    $stripeCustomer = \Stripe\Customer::retrieve($customer->id);
+                    $stripeCustomer->delete();
+                } catch (\Exception $cleanupError) {
+                    \Log::error("Stripe cleanup failed: " . $cleanupError->getMessage());
+                }
+            }
+
+            return response()->json([
+                'error' => 'Registration failed',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
     }
+
 
 
 

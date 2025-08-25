@@ -26,10 +26,10 @@ Route::get('/test-admin-email', function () {
 // });
 
 
-Route::any('{any}', function () {
-    return redirect()->away('https://prime.ajurnie.com/');
-})->where('any', '.*');
+// Route::any('{any}', function () {
+//     return redirect()->away('https://prime.ajurnie.com/');
+// })->where('any', '.*');
 
 
-// Route::get('/', [AuthController::class, 'index'])->name('auth.index');
+Route::get('/', [AuthController::class, 'index'])->name('auth.index');
 
