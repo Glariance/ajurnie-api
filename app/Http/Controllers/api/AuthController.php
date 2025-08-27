@@ -13,6 +13,9 @@ use Stripe\Customer;
 use Stripe\Subscription;
 use Stripe\InvoiceItem;
 use Illuminate\Support\Facades\Mail;
+use App\Mail\SubscriptionActiveMail;
+use App\Mail\WelcomeMail;
+
 
 
 class AuthController extends Controller
@@ -24,7 +27,7 @@ class AuthController extends Controller
     {
         //
         return response()->json([
-            'Welcome to the authentication API from index method'
+            'Welcome to the authentication API from index method',
             // app()->environment()
         ]);
     }
@@ -59,7 +62,7 @@ class AuthController extends Controller
             'password' => 'required|string|min:6|confirmed',
             'role' => 'required|string|in:novice,trainer',
             'payment_method' => 'required|string',
-            'interval' => 'required|string|in:monthly,yearly', // 👈 new field to pick interval
+            'interval' => 'string|in:monthly,yearly', // 👈 new field to pick interval
         ]);
 
         Stripe::setApiKey(config('services.stripe.secret'));
@@ -146,10 +149,21 @@ class AuthController extends Controller
                 'type' => User::ROLE_USER,
                 'stripe_customer_id' => $customer->id,
                 'stripe_subscription_id' => $subscription->id,
+                'subscription_status' => $subscription->status,
+                'subscription_price_id' => $priceId,
+                'subscription_interval' => $validated['interval'],
                 'trial_ends_at' => date('Y-m-d H:i:s', $trialEnd),
             ]);
 
             DB::commit();
+
+            // ✅ Step 8: Send Emails
+            try {
+                Mail::to($user->email)->send(new WelcomeMail($user));
+                Mail::to($user->email)->send(new SubscriptionActiveMail($user, $subscription));
+            } catch (\Exception $mailError) {
+                \Log::error("Mail sending failed: " . $mailError->getMessage());
+            }
 
             $token = $user->createToken('token')->plainTextToken;
 
@@ -159,7 +173,6 @@ class AuthController extends Controller
                 'subscription' => $subscription,
                 'membership_type' => $isFounding ? 'Founding' : 'Post Founding',
             ], 201);
-            
         } catch (\Exception $e) {
             DB::rollBack();
 
@@ -178,8 +191,6 @@ class AuthController extends Controller
             ], 500);
         }
     }
-
-
 
 
 
