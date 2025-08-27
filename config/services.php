@@ -14,12 +14,21 @@ return [
     |
     */
 
+
     'stripe' => [
         'secret' => env('STRIPE_SECRET'),
-        'novice_price_id' => env('NOVICE_PRICE_ID'),
-        'trainer_price_id' => env('TRAINER_PRICE_ID'),
-        'secret' => env('STRIPE_SECRET'),
+
+        // Founding Members
+        'founding_novice_yearly' => env('STRIPE_FOUNDING_NOVICE_YEARLY'),
+        'founding_trainer_yearly' => env('STRIPE_FOUNDING_TRAINER_YEARLY'),
+
+        // Post Founding Members
+        'post_novice_monthly' => env('STRIPE_POST_NOVICE_MONTHLY'),
+        'post_novice_yearly' => env('STRIPE_POST_NOVICE_YEARLY'),
+        'post_trainer_monthly' => env('STRIPE_POST_TRAINER_MONTHLY'),
+        'post_trainer_yearly' => env('STRIPE_POST_TRAINER_YEARLY'),
     ],
+
 
 
     'postmark' => [

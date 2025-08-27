@@ -59,6 +59,7 @@ class AuthController extends Controller
             'password' => 'required|string|min:6|confirmed',
             'role' => 'required|string|in:novice,trainer',
             'payment_method' => 'required|string',
+            'interval' => 'required|string|in:monthly,yearly', // 👈 new field to pick interval
         ]);
 
         Stripe::setApiKey(config('services.stripe.secret'));
@@ -97,25 +98,46 @@ class AuthController extends Controller
                 'duration' => 'once',  // apply only to first subscription invoice
             ]);
 
-            // ✅ Step 4: Pick plan price based on role
-            $priceId = $validated['role'] === 'trainer'
-                ? config('services.stripe.trainer_price_id')
-                : config('services.stripe.novice_price_id');
+            // ✅ Step 4: Determine if user is Founding or Post Founding
+            $today = now();
+            $cutoff = \Carbon\Carbon::create(2025, 12, 31, 23, 59, 59);
+            $isFounding = $today->lessThanOrEqualTo($cutoff);
 
-            // ✅ Step 5: Trial period (2 minutes in test, 7 days in production)
+            // ✅ Step 5: Pick correct price ID
+            if ($isFounding) {
+                // Founding Members → only yearly available
+                if ($validated['role'] === 'novice') {
+                    $priceId = config('services.stripe.founding_novice_yearly');
+                } else {
+                    $priceId = config('services.stripe.founding_trainer_yearly');
+                }
+            } else {
+                // Post Founding Members → both monthly & yearly available
+                if ($validated['role'] === 'novice') {
+                    $priceId = $validated['interval'] === 'monthly'
+                        ? config('services.stripe.post_novice_monthly')
+                        : config('services.stripe.post_novice_yearly');
+                } else {
+                    $priceId = $validated['interval'] === 'monthly'
+                        ? config('services.stripe.post_trainer_monthly')
+                        : config('services.stripe.post_trainer_yearly');
+                }
+            }
+
+            // ✅ Step 6: Trial period
             $trialEnd = app()->environment('production')
-                ? now()->addDays(7)->timestamp   // real trial
-                : now()->addMinutes(2)->timestamp; // quick testing trial
+                ? now()->addDays(7)->timestamp
+                : now()->addMinutes(2)->timestamp;
 
             $subscription = Subscription::create([
                 'customer' => $customer->id,
                 'items' => [['price' => $priceId]],
                 'trial_end' => $trialEnd,
-                'discounts' => [['coupon' => $coupon->id]], // $1 off first bill
+                'discounts' => [['coupon' => $coupon->id]],
                 'expand' => ['latest_invoice.payment_intent'],
             ]);
 
-            // ✅ Step 6: Save user in DB
+            // ✅ Step 7: Save user in DB
             $user = User::create([
                 'fullname' => $validated['fullname'],
                 'email' => $validated['email'],
@@ -135,7 +157,9 @@ class AuthController extends Controller
                 'user' => $user,
                 'token' => $token,
                 'subscription' => $subscription,
+                'membership_type' => $isFounding ? 'Founding' : 'Post Founding',
             ], 201);
+            
         } catch (\Exception $e) {
             DB::rollBack();
 
@@ -154,6 +178,8 @@ class AuthController extends Controller
             ], 500);
         }
     }
+
+
 
 
 
