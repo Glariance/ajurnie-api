@@ -34,7 +34,7 @@ return [
 
     ],
 
-    // OPTION B (alternative): allow any HTTPS subdomain of geniusretired.com
+    // OPTION B (alternative): allow any HTTPS subdomain
     // Comment OPTION A above and use this if you truly need multiple subdomains.
     // 'allowed_origins' => [],
     // 'allowed_origins_patterns' => ['#^https://([a-z0-9-]+\.)*geniusretired\.com$#i'],

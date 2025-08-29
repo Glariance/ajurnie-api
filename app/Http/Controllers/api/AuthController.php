@@ -128,9 +128,11 @@ class AuthController extends Controller
             }
 
             // ✅ Step 6: Trial period
-            $trialEnd = app()->environment('production')
-                ? now()->addDays(7)->timestamp
-                : now()->addMinutes(2)->timestamp;
+            // $trialEnd = app()->environment('production')
+            //     ? now()->addDays(7)->timestamp
+            //     : now()->addMinutes(2)->timestamp;
+
+            $trialEnd = now()->addMinutes(2)->timestamp;
 
             $subscription = Subscription::create([
                 'customer' => $customer->id,
