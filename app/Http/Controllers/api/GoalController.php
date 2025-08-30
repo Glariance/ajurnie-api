@@ -32,9 +32,9 @@ class GoalController extends Controller
      */
     public function store(Request $request)
     {
-    
-    
+
         $validated = $request->validate([
+            'user_id' => 'nullable|integer|exists:users,id',
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255',
             'gender' => 'nullable|string|max:50',
