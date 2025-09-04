@@ -33,7 +33,6 @@ class SubscriptionController extends Controller
      */
     public function show(Request $request)
     {
-
         $user = $request->user();
         if (!$user->stripe_subscription_id) {
             return response()->json(['active' => false]);
@@ -44,16 +43,22 @@ class SubscriptionController extends Controller
         try {
             $subscription = Subscription::retrieve($user->stripe_subscription_id);
 
-            // Get price ID from subscription
-            $priceId = $subscription->items->data[0]->price->id;
+            // Get price object from subscription
+            $price = $subscription->items->data[0]->price;
+            $priceId = $price->id;
 
             // Map price ID → plan name
             $planName = $this->planMapping()[$priceId] ?? $priceId;
+
+            // Format price
+            $amount = number_format($price->unit_amount / 100, 2);
+            $currency = strtoupper($price->currency);
 
             return response()->json([
                 'active' => in_array($subscription->status, ['active', 'trialing']),
                 'status' => $subscription->status,
                 'plan' => $planName,
+                'price' => $amount . ' ' . $currency, // ✅ Added price
                 'start_date' => date('Y-m-d H:i:s', $subscription->start_date),
                 'current_period_end' => date('Y-m-d H:i:s', $subscription->current_period_end),
                 'trial_end' => $subscription->trial_end ? date('Y-m-d H:i:s', $subscription->trial_end) : null,
@@ -63,6 +68,7 @@ class SubscriptionController extends Controller
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
+
 
     /**
      * Cancel current user's subscription (end of billing cycle)
@@ -74,12 +80,12 @@ class SubscriptionController extends Controller
             return response()->json(['error' => 'No active subscription'], 400);
         }
 
-        Stripe::setApiKey(config('services.stripe.secret'));
+        \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
 
         try {
-            $subscription = Subscription::update($user->stripe_subscription_id, [
-                'cancel_at_period_end' => true,
-            ]);
+            // Cancel immediately
+            $subscription = \Stripe\Subscription::retrieve($user->stripe_subscription_id);
+            $subscription->delete();
 
             $user->update(['subscription_status' => $subscription->status]);
 

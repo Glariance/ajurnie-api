@@ -29,6 +29,9 @@ return [
         'post_trainer_yearly' => env('STRIPE_POST_TRAINER_YEARLY'),
     ],
 
+    'openai' => [
+        'key' => env('OPENAI_API_KEY'),
+    ],
 
 
     'postmark' => [
