@@ -17,10 +17,12 @@ Route::post('store-goal', [GoalController::class, 'store']);
 
 // Protected routes (authentication required)
 Route::middleware('auth:sanctum')->group(function () {
-    Route::get('user', [AuthController::class, 'user']);
     Route::post('logout', [AuthController::class, 'logout']);
+    Route::get('user', [AuthController::class, 'user']);
     Route::get('/subscription', [SubscriptionController::class, 'show']);
     Route::post('/subscription/cancel', [SubscriptionController::class, 'cancel']);
+    Route::post('/change-password', [AuthController::class, 'changePassword']);
+    Route::post('/update-profile', [AuthController::class, 'updateProfile']);
 });    
 
 
