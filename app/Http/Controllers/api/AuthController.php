@@ -15,7 +15,10 @@ use Stripe\InvoiceItem;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\SubscriptionActiveMail;
 use App\Mail\WelcomeMail;
-
+use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 
 class AuthController extends Controller
@@ -30,25 +33,6 @@ class AuthController extends Controller
             'Welcome to the authentication API from index method',
             // app()->environment()
         ]);
-    }
-
-
-    public function getUser()
-    {
-        //
-        return response()->json([
-
-            'users' => User::all()
-
-        ]);
-    }
-
-    /**
-     * Show the form for creating a new resource.
-     */
-    public function create()
-    {
-        //
     }
 
     /**
@@ -196,11 +180,94 @@ class AuthController extends Controller
 
 
 
+    public function getUser(Request $request)
+    {
+        $u = $request->user();
+
+        return response()->json([
+            'id'        => $u->id,
+            'fullname'  => $u->fullname,
+            'email'     => $u->email,
+            'phone'     => $u->phone,
+            'dob'       => $u->dob, // cast to 'date:Y-m-d' in model if you want strict format
+            'gender'    => $u->gender,
+            'address1'  => $u->address1,
+            'address2'  => $u->address2,
+            'city'      => $u->city,
+            'state'     => $u->state,
+            'zip'       => $u->zip,
+            'country'   => $u->country,
+            'bio'       => $u->bio,
+            'avatarUrl' => $u->avatar ? Storage::url($u->avatar) : null,
+        ]);
+    }
+
+
+    public function updateUser(Request $request)
+    {
+
+        // return response()->json([
+        //     'input'     => $request->except('avatar'),   // shows JSON fields
+        //     'hasAvatar' => $request->hasFile('avatar'),  // true/false
+        //     'files'     => $request->file('avatar') ? [
+        //         'original' => $request->file('avatar')->getClientOriginalName(),
+        //         'size'     => $request->file('avatar')->getSize(),
+        //         'mime'     => $request->file('avatar')->getMimeType(),
+        //     ] : null,
+        // ]);
+
+        $user = $request->user();
+
+        // Validate (email intentionally excluded)
+        $validated = $request->validate([
+            'fullname' => ['sometimes', 'required', 'string', 'max:255'],
+            'phone'    => ['sometimes', 'nullable', 'string', 'max:255'],
+            'dob'      => ['sometimes', 'nullable', 'date'],
+            'gender'   => ['sometimes', 'nullable', 'string', 'max:255'],
+            'address1' => ['sometimes', 'nullable', 'string'],
+            'address2' => ['sometimes', 'nullable', 'string'],
+            'city'     => ['sometimes', 'nullable', 'string', 'max:255'],
+            'state'    => ['sometimes', 'nullable', 'string', 'max:255'],
+            'zip'      => ['sometimes', 'nullable', 'string', 'max:255'],
+            'country'  => ['sometimes', 'nullable', 'string', 'max:255'],
+            'bio'      => ['sometimes', 'nullable', 'string'],
+            'avatar'   => ['sometimes', 'nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
+        ]);
+
+        // Handle avatar upload if provided
+        if ($request->hasFile('avatar')) {
+            if ($user->avatar) {
+                Storage::disk('public')->delete($user->avatar);
+            }
+            $path = $request->file('avatar')->store('avatars', 'public');
+            $validated['avatar'] = $path;
+        }
+
+        // Persist only validated keys
+        $user->fill($validated)->save();
+
+        return response()->json([
+            'id'        => $user->id,
+            'fullname'  => $user->fullname,
+            'email'     => $user->email, // read-only
+            'phone'     => $user->phone,
+            'dob'       => $user->dob,   // cast to Y-m-d in model if desired
+            'gender'    => $user->gender,
+            'address1'  => $user->address1,
+            'address2'  => $user->address2,
+            'city'      => $user->city,
+            'state'     => $user->state,
+            'zip'       => $user->zip,
+            'country'   => $user->country,
+            'bio'       => $user->bio,
+            'avatarUrl' => $user->avatar ? Storage::url($user->avatar) : null,
+        ]);
+    }
+
 
 
     public function login(Request $request)
     {
-
 
         $fields = $request->validate([
             'email' => 'required|string|email',
@@ -273,37 +340,5 @@ class AuthController extends Controller
         $user->save();
 
         return response()->json(['message' => 'Profile updated successfully', 'user' => $user], 200);
-    }
-
-    /**
-     * Display the specified resource.
-     */
-    public function show(string $id)
-    {
-        //
-    }
-
-    /**
-     * Show the form for editing the specified resource.
-     */
-    public function edit(string $id)
-    {
-        //
-    }
-
-    /**
-     * Update the specified resource in storage.
-     */
-    public function update(Request $request, string $id)
-    {
-        //
-    }
-
-    /**
-     * Remove the specified resource from storage.
-     */
-    public function destroy(string $id)
-    {
-        //
     }
 }

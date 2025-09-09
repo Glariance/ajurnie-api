@@ -31,6 +31,17 @@ class User extends Authenticatable
         'interval',
         'type',
         'is_paid',
+        'phone',
+        'dob',
+        'gender',
+        'address1',
+        'address2',
+        'city',
+        'state',
+        'zip',
+        'country',
+        'bio',
+        'avatar',
         'stripe_customer_id',
         'stripe_subscription_id',
         'subscription_status',
@@ -62,6 +73,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'dob' => 'date:Y-m-d',
         ];
     }
 }
