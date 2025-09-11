@@ -3,65 +3,41 @@
 namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
-use Illuminate\Mail\Mailables\Content;
-use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 use App\Models\Goal;
-
+use Illuminate\Support\Facades\Storage;
 
 class UserThankYouMail extends Mailable
 {
-    /**
-     * Create a new message instance.
-     */
     use Queueable, SerializesModels;
 
     public $goal;
+    public $filePath;
 
-    public function __construct(Goal $goal)
+    /**
+     * Create a new message instance.
+     */
+    public function __construct(Goal $goal, string $filePath)
     {
         $this->goal = $goal;
+        $this->filePath = $filePath;
     }
 
+    /**
+     * Build the message.
+     */
     public function build()
     {
-        return $this->subject('Your Goal Submission')
-            ->view('emails.user.user_goal') // This uses our custom HTML view
+        return $this->subject('Your Personalized Fitness & Nutrition Plan')
+            ->view('emails.user.user_goal') // your custom HTML view
             ->with([
                 'goal' => $this->goal,
+                'downloadUrl' => Storage::url($this->filePath),
+            ])
+            ->attach(Storage::path($this->filePath), [
+                'as' => 'fitness_plan.pdf',
+                'mime' => 'application/pdf',
             ]);
-    }
-
-
-    /**
-     * Get the message envelope.
-     */
-    public function envelope(): Envelope
-    {
-        return new Envelope(
-            subject: 'User Thank You Mail',
-        );
-    }
-
-    /**
-     * Get the message content definition.
-     */
-    public function content(): Content
-    {
-        return new Content(
-            markdown: 'emails.user.thankyou',
-        );
-    }
-
-    /**
-     * Get the attachments for the message.
-     *
-     * @return array<int, \Illuminate\Mail\Mailables\Attachment>
-     */
-    public function attachments(): array
-    {
-        return [];
     }
 }

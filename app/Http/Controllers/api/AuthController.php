@@ -28,6 +28,7 @@ class AuthController extends Controller
      */
     public function index()
     {
+        // dd(env('OPENAI_API_KEY'));
         //
         return response()->json([
             'Welcome to the authentication API from index method',

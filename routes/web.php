@@ -11,6 +11,7 @@ use App\Mail\UserThankYouMail;
 
 
 Route::get('/test-user-email', function () {
+    dd(1);
     $goal = Goal::latest()->first();
     return new UserThankYouMail($goal);
 });

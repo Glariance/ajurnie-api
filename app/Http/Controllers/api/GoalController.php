@@ -8,6 +8,10 @@ use Illuminate\Http\Request;
 use App\Mail\UserThankYouMail;
 use App\Mail\AdminGoalNotification;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use App\Models\PlanPdf; // <-- table for storing PDF info
+use Barryvdh\DomPDF\Facade\Pdf; // using dompdf
 
 class GoalController extends Controller
 {
@@ -61,27 +65,79 @@ class GoalController extends Controller
         // Store in database
         $goal = Goal::create($validated);
 
+        $userInfo = "
+                Name: {$goal->name}
+                Age: {$goal->age}
+                Gender: {$goal->gender}
+                Height: {$goal->height} cm
+                Current Weight: {$goal->current_weight} kg
+                Target Weight: {$goal->target_weight} kg
+                Goal: {$goal->fitness_goal}
+                Activity Level: {$goal->activity_level}
+                Workout Style: {$goal->workout_style}
+                Dietary Preferences: " . implode(', ', (array)$goal->dietary_preferences) . "
+                Allergies: {$goal->food_allergies}
+                Medical Conditions: {$goal->medical_conditions}
+                ";
 
-        // Send emails
-        if (empty($goal->email)) {
-            throw new \Exception('User email is missing — cannot send user email.');
+        $prompt = "You are a certified fitness & nutrition expert. 
+                Based on the following user profile, create a safe, practical 
+                4-week gym + nutrition plan. Include workouts (per week), 
+                daily diet recommendations, and safety notes. 
+                Keep language simple and motivational.\n\n{$userInfo}";
+
+        // -------------------------------
+        // 2. Call OpenAI Responses API
+        // -------------------------------
+        $response = Http::withHeaders([
+            'Authorization' => 'Bearer ' . env('OPENAI_API_KEY'),
+            'Content-Type' => 'application/json',
+        ])->post('https://api.openai.com/v1/responses', [
+            'model' => 'gpt-4o',
+            'input' => [
+                ['role' => 'system', 'content' => 'You generate structured fitness & nutrition plans.'],
+                ['role' => 'user', 'content' => $prompt],
+            ],
+            'max_output_tokens' => 1200,
+        ]);
+
+        if ($response->failed()) {
+            \Log::error('OpenAI API failed', ['resp' => $response->body()]);
+            return response()->json(['error' => 'Plan generation failed'], 500);
         }
 
-        if (empty(config('mail.admin_email'))) {
-            throw new \Exception('Admin email is missing — set ADMIN_EMAIL in .env.');
-        }
+        $json = $response->json();
+        $planText = $json['output_text'] ?? ($json['output'][0]['content'][0]['text'] ?? '');
 
-        \Log::info('User email: ' . $goal->email);
-        \Log::info('Admin email: ' . config('mail.admin_email'));
+        // -------------------------------
+        // 3. Generate PDF
+        // -------------------------------
+        $pdf = Pdf::loadView('pdf.plan', ['plan' => $planText, 'goal' => $goal]);
+        $fileName = 'plans/' . uniqid('plan_') . '.pdf';
+        Storage::disk('public')->put($fileName, $pdf->output());
 
-        Mail::to($goal->email)->send(new UserThankYouMail($goal));
+        // -------------------------------
+        // 4. Save PDF path in another table
+        // -------------------------------
+        $planPdf = PlanPdf::create([
+            'user_id' => $goal->user_id,
+            'goal_id' => $goal->id,
+            'file_path' => $fileName,
+        ]);
+
+        // -------------------------------
+        // 5. Emails (your existing code)
+        // -------------------------------
+
+        // send email with attachment + link
+        Mail::to($goal->email)->send(new UserThankYouMail($goal, $fileName));
+        // admin email (without attachment if not needed)
         Mail::to(config('mail.admin_email'))->send(new AdminGoalNotification($goal));
 
-
-
         return response()->json([
-            'message' => 'Goal saved and emails sent successfully!',
-            'data' => $goal
+            'message' => 'Goal saved, plan generated, and PDF created!',
+            'goal' => $goal,
+            'plan_pdf' => $planPdf,
         ]);
     }
 
