@@ -18,7 +18,7 @@ class UserThankYouMail extends Mailable
     /**
      * Create a new message instance.
      */
-    public function __construct(Goal $goal, string $filePath)
+    public function __construct(Goal $goal, string $filePath = null)
     {
         $this->goal = $goal;
         $this->filePath = $filePath;
@@ -29,15 +29,20 @@ class UserThankYouMail extends Mailable
      */
     public function build()
     {
-        return $this->subject('Your Personalized Fitness & Nutrition Plan')
-            ->view('emails.user.user_goal') // your custom HTML view
+        $builder = $this->subject('Your Personalized Fitness & Nutrition Plan')
+            ->view('emails.user.user_goal')
             ->with([
                 'goal' => $this->goal,
-                'downloadUrl' => Storage::url($this->filePath),
-            ])
-            ->attach(Storage::path($this->filePath), [
+                'downloadUrl' => $this->filePath ? Storage::disk('public')->url($this->filePath) : null,
+            ]);
+
+        if ($this->filePath) {
+            $builder->attach(Storage::disk('public')->path($this->filePath), [
                 'as' => 'fitness_plan.pdf',
                 'mime' => 'application/pdf',
             ]);
+        }
+
+        return $builder;
     }
 }

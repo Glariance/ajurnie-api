@@ -89,17 +89,33 @@ class GoalController extends Controller
         // -------------------------------
         // 2. Call OpenAI Responses API
         // -------------------------------
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . env('OPENAI_API_KEY'),
-            'Content-Type' => 'application/json',
-        ])->post('https://api.openai.com/v1/responses', [
-            'model' => 'gpt-4o',
-            'input' => [
-                ['role' => 'system', 'content' => 'You generate structured fitness & nutrition plans.'],
-                ['role' => 'user', 'content' => $prompt],
-            ],
-            'max_output_tokens' => 1200,
-        ]);
+
+        // $response = Http::withHeaders([
+        //     'Authorization' => 'Bearer ' . env('OPENAI_API_KEY'),
+        //     'Content-Type' => 'application/json',
+        // ])->post('https://api.openai.com/v1/responses', [
+        //     'model' => 'gpt-4o',
+        //     'input' => [
+        //         ['role' => 'system', 'content' => 'You generate structured fitness & nutrition plans.'],
+        //         ['role' => 'user', 'content' => $prompt],
+        //     ],
+        //     'max_output_tokens' => 1200,
+        // ]);
+
+
+        // TEST PHASE: Use static test data instead of OpenAI API
+        $response = new class {
+            public function failed()
+            {
+                return false;
+            }
+            public function json()
+            {
+                return [
+                    'output_text' => "Sample 4-week gym + nutrition plan:\n\nWeek 1: Full body workouts 3x/week, focus on form. Daily diet: lean protein, veggies, whole grains. Safety: Start slow, hydrate, rest.\n\nWeek 2: Increase intensity, add cardio. Diet: more fruits, balanced carbs. Safety: Listen to your body.\n\nWeek 3: Mix strength & HIIT. Diet: healthy fats, portion control. Safety: Stretch before/after workouts.\n\nWeek 4: Challenge yourself, track progress. Diet: maintain variety, avoid processed foods. Safety: Celebrate achievements, stay motivated!",
+                ];
+            }
+        };
 
         if ($response->failed()) {
             \Log::error('OpenAI API failed', ['resp' => $response->body()]);

@@ -3,7 +3,6 @@
 use App\Http\Controllers\api\AuthController;
 use Illuminate\Support\Facades\Route;
 
-
 use App\Models\Goal;
 use App\Mail\AdminGoalNotification;
 use App\Mail\UserThankYouMail;
@@ -11,10 +10,13 @@ use App\Mail\UserThankYouMail;
 
 
 Route::get('/test-user-email', function () {
-    dd(1);
     $goal = Goal::latest()->first();
-    return new UserThankYouMail($goal);
+
+    $filePath = 'plans/test_plan.pdf'; 
+
+    return new UserThankYouMail($goal, $filePath);
 });
+
 
 Route::get('/test-admin-email', function () {
     $goal = Goal::latest()->first();

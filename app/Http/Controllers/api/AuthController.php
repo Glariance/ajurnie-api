@@ -15,11 +15,12 @@ use Stripe\InvoiceItem;
 use Illuminate\Support\Facades\Mail;
 use App\Mail\SubscriptionActiveMail;
 use App\Mail\WelcomeMail;
+use App\Mail\ResetPasswordMail;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
-
+use Illuminate\Support\Facades\Password;
 
 class AuthController extends Controller
 {
@@ -342,4 +343,53 @@ class AuthController extends Controller
 
         return response()->json(['message' => 'Profile updated successfully', 'user' => $user], 200);
     }
+
+
+    public function forgotPassword(Request $request)
+    {
+        $request->validate(['email' => 'required|email']);
+
+        $user = User::where('email', $request->input('email'))->first();
+
+        // Optional: if you want an error toast for unknown emails, return 404 with message here.
+        if (!$user) {
+            return response()->json([
+                'message' => "We couldn't find an account with that email. Double-check the address or create a new one."
+            ], 404);
+        }
+
+        // Create a broker token compatible with Password::reset()
+        $token = Password::createToken($user);
+
+        // Build SPA URL: /reset-password?token=...&email=...
+        $spa = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
+        $url = $spa . '/reset-password?token=' . urlencode($token) . '&email=' . urlencode($user->email);
+
+        // Send your custom Mailable
+        Mail::to($user->email)->send(new ResetPasswordMail($user, $url));
+
+        return response()->json(['message' => 'If that email exists, a reset link was sent.']);
+    }
+
+    public function resetPassword(Request $request)
+    {
+        $request->validate([
+            'token'    => 'required',
+            'email'    => 'required|email',
+            'password' => 'required|confirmed|min:8',
+        ]);
+
+        $status = Password::reset(
+            $request->only('email', 'password', 'password_confirmation', 'token'),
+            function ($user, $password) {
+                $user->forceFill(['password' => Hash::make($password)])->save();
+                // Optional: fire events, revoke tokens, etc.
+            }
+        );
+
+        return $status === Password::PASSWORD_RESET
+            ? response()->json(['message' => 'Password updated.'])
+            : response()->json(['message' => __($status)], 422);
+    }
+
 }
