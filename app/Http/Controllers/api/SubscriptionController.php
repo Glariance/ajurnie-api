@@ -94,4 +94,91 @@ class SubscriptionController extends Controller
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
+
+
+    public function changePlan(Request $request)
+    {
+        $validated = $request->validate([
+            'plan' => 'required|string|in:novice,trainer',
+            'interval' => 'nullable|string|in:monthly,yearly',
+            'payment_method' => 'required|string',
+        ]);
+
+        Stripe::setApiKey(config('services.stripe.secret'));
+
+        $user = $request->user();
+        $today = now();
+        $cutoff = \Carbon\Carbon::create(2025, 12, 31, 23, 59, 59);
+        $isFounding = $today->lessThanOrEqualTo($cutoff);
+
+        // ✅ Pick price ID
+        if ($isFounding) {
+            $priceId = $validated['plan'] === 'novice'
+                ? config('services.stripe.founding_novice_yearly')
+                : config('services.stripe.founding_trainer_yearly');
+            $interval = 'yearly';
+        } else {
+            if ($validated['plan'] === 'novice') {
+                $priceId = $validated['interval'] === 'monthly'
+                    ? config('services.stripe.post_novice_monthly')
+                    : config('services.stripe.post_novice_yearly');
+            } else {
+                $priceId = $validated['interval'] === 'monthly'
+                    ? config('services.stripe.post_trainer_monthly')
+                    : config('services.stripe.post_trainer_yearly');
+            }
+            $interval = $validated['interval'];
+        }
+
+        try {
+            // ✅ Attach payment method & set as default
+            \Stripe\Customer::update($user->stripe_customer_id, [
+                'invoice_settings' => ['default_payment_method' => $validated['payment_method']],
+            ]);
+
+
+            // // ✅ Cancel old subscription
+            // if ($user->stripe_subscription_id) {
+            //     \Stripe\Subscription::update($user->stripe_subscription_id, [
+            //         'cancel_at_period_end' => false,
+            //     ]);
+            //     \Stripe\Subscription::cancel($user->stripe_subscription_id);
+            // }
+
+            
+            // ✅ Cancel old subscription immediately
+            if ($user->stripe_subscription_id) {
+                $oldSubscription = \Stripe\Subscription::retrieve($user->stripe_subscription_id);
+                $oldSubscription->cancel();
+            }
+
+
+            // ✅ Create new subscription
+            $subscription = \Stripe\Subscription::create([
+                'customer' => $user->stripe_customer_id,
+                'items' => [['price' => $priceId]],
+                'expand' => ['latest_invoice.payment_intent'],
+            ]);
+
+            // ✅ Update DB
+            $user->update([
+                'role' => $validated['plan'],
+                'stripe_subscription_id' => $subscription->id,
+                'subscription_price_id' => $priceId,
+                'subscription_interval' => $interval,
+                'subscription_status' => $subscription->status,
+            ]);
+
+            return response()->json([
+                'message' => 'Plan updated successfully',
+                'subscription' => $subscription,
+                'membership_type' => $isFounding ? 'Founding' : 'Post Founding',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Plan change failed',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
 }
