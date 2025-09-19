@@ -38,7 +38,7 @@ class SubscriptionController extends Controller
     public function show(Request $request)
     {
         $user = $request->user();
-        $sub  = $user->currentSubscription; // latest subscription row
+        $sub  = $user->currentSubscription; // latest subscription row in DB
 
         if (!$sub || !$sub->stripe_subscription_id) {
             return response()->json(['active' => false]);
@@ -47,15 +47,20 @@ class SubscriptionController extends Controller
         Stripe::setApiKey(config('services.stripe.secret'));
 
         try {
-            $remote = StripeSubscription::retrieve($sub->stripe_subscription_id);
+            $remote = \Stripe\Subscription::retrieve($sub->stripe_subscription_id);
             $price  = $remote->items->data[0]->price ?? null;
 
-            // Fallbacks from local snapshot if Stripe response is partial
-            $priceId = $price?->id ?? $sub->price_id;
+            // Map price → readable name
+            $priceId  = $price?->id ?? $sub->price_id;
             $planName = $this->planMapping()[$priceId] ?? $sub->plan ?? $priceId;
 
             $amount   = $price ? number_format($price->unit_amount / 100, 2) : null;
             $currency = $price ? strtoupper($price->currency) : null;
+
+            // ✅ prefer Stripe current_period_end, fallback to DB
+            $currentPeriodEnd = $remote->current_period_end
+                ? date('Y-m-d H:i:s', $remote->current_period_end)
+                : ($sub->current_period_end ? $sub->current_period_end->toDateTimeString() : null);
 
             return response()->json([
                 'active'             => in_array($remote->status, ['active', 'trialing']),
@@ -63,12 +68,11 @@ class SubscriptionController extends Controller
                 'plan'               => $planName,
                 'price'              => $amount && $currency ? ($amount . ' ' . $currency) : null,
                 'start_date'         => $remote->start_date ? date('Y-m-d H:i:s', $remote->start_date) : null,
-                'current_period_end' => $remote->current_period_end ? date('Y-m-d H:i:s', $remote->current_period_end) : null,
+                'current_period_end' => $currentPeriodEnd,
                 'trial_end'          => $remote->trial_end ? date('Y-m-d H:i:s', $remote->trial_end) : null,
                 'cancel_at'          => $remote->cancel_at ? date('Y-m-d H:i:s', $remote->cancel_at) : null,
             ]);
         } catch (\Stripe\Exception\InvalidRequestException $e) {
-            // Stale/missing remote id → optionally mark local row as canceled
             if (($e->getHttpStatus() === 404) || ($e->getError()?->code === 'resource_missing')) {
                 $sub->update(['status' => 'canceled', 'canceled_at' => now()]);
                 return response()->json(['active' => false]);
@@ -78,6 +82,7 @@ class SubscriptionController extends Controller
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
+
 
     /**
      * Cancel current user's subscription immediately
@@ -121,6 +126,7 @@ class SubscriptionController extends Controller
     /**
      * Change plan immediately: attach PM, cancel old sub, create new sub, save new row
      */
+
     public function changePlan(Request $request)
     {
         $validated = $request->validate([
@@ -134,7 +140,7 @@ class SubscriptionController extends Controller
             return response()->json(['error' => 'Customer not found for this user.'], 400);
         }
 
-        Stripe::setApiKey(config('services.stripe.secret'));
+        \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
 
         // Founding cutoff
         $isFounding = now()->lessThanOrEqualTo(\Carbon\Carbon::create(2025, 12, 31, 23, 59, 59));
@@ -164,7 +170,7 @@ class SubscriptionController extends Controller
             $pmId = $validated['payment_method'];
 
             // Attach PaymentMethod if needed & set default
-            $pm = StripePaymentMethod::retrieve($pmId);
+            $pm = \Stripe\PaymentMethod::retrieve($pmId);
 
             if (!empty($pm->customer) && $pm->customer !== $user->stripe_customer_id) {
                 return response()->json(['error' => 'Payment method belongs to a different customer.'], 400);
@@ -172,7 +178,7 @@ class SubscriptionController extends Controller
             if (empty($pm->customer)) {
                 $pm->attach(['customer' => $user->stripe_customer_id]);
             }
-            StripeCustomer::update($user->stripe_customer_id, [
+            \Stripe\Customer::update($user->stripe_customer_id, [
                 'invoice_settings' => ['default_payment_method' => $pmId],
             ]);
 
@@ -180,7 +186,7 @@ class SubscriptionController extends Controller
             $old = $user->currentSubscription;
             if ($old && $old->stripe_subscription_id) {
                 try {
-                    $remoteOld = StripeSubscription::retrieve($old->stripe_subscription_id);
+                    $remoteOld = \Stripe\Subscription::retrieve($old->stripe_subscription_id);
                     $remoteOld->cancel();
                     $old->update(['status' => $remoteOld->status, 'canceled_at' => now()]);
                 } catch (\Stripe\Exception\InvalidRequestException $e) {
@@ -193,19 +199,26 @@ class SubscriptionController extends Controller
             }
 
             // Create new subscription
-            $newStripeSub = StripeSubscription::create([
+            $newStripeSub = \Stripe\Subscription::create([
                 'customer' => $user->stripe_customer_id,
                 'items'    => [['price' => $priceId]],
-                'expand'   => ['latest_invoice.payment_intent'],
+                'expand'   => ['latest_invoice.payment_intent', 'items'], // expand items too
             ]);
 
-            $currentPeriodEnd = $newStripeSub->current_period_end ?? null;
+            // ✅ Resolve current_period_end from subscription or item
+            $currentPeriodEnd = $newStripeSub->current_period_end
+                ?? ($newStripeSub->items->data[0]->current_period_end ?? null);
+
             if (!$currentPeriodEnd) {
-                $fresh = \Stripe\Subscription::retrieve($newStripeSub->id);
-                $currentPeriodEnd = $fresh->current_period_end ?? null;
+                $fresh = \Stripe\Subscription::retrieve($newStripeSub->id, [
+                    'expand' => ['items'],
+                ]);
+                $currentPeriodEnd = $fresh->current_period_end
+                    ?? ($fresh->items->data[0]->current_period_end ?? null);
             }
 
-            SubscriptionModel::create([
+            // Save to DB
+            \App\Models\Subscription::create([
                 'user_id'                => $user->id,
                 'stripe_subscription_id' => $newStripeSub->id,
                 'price_id'               => $priceId,
@@ -218,13 +231,9 @@ class SubscriptionController extends Controller
                 'membership_type'        => $membershipType,
             ]);
 
-
-            \Log::info('stripe sub', ['sub' => $newStripeSub]);
-
-
             return response()->json([
-                'message'       => 'Plan updated successfully',
-                'subscription'  => $newStripeSub,
+                'message'        => 'Plan updated successfully',
+                'subscription'   => $newStripeSub,
                 'membership_type' => $isFounding ? 'Founding' : 'Post Founding',
             ]);
         } catch (\Exception $e) {

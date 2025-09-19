@@ -53,7 +53,7 @@ class AuthController extends Controller
             'password'         => 'required|string|min:6|confirmed',
             'role'             => 'required|string|in:novice,trainer',
             'payment_method'   => 'required|string',                 // pm_xxx from Stripe.js
-            'interval'         => 'required|string|in:monthly,yearly', // for post-founding; will be overridden to yearly during founding
+            'interval'         => 'required|string|in:monthly,yearly',
         ]);
 
         Stripe::setApiKey(config('services.stripe.secret'));
@@ -62,20 +62,17 @@ class AuthController extends Controller
         $customer = null;
 
         try {
-            // -----------------------------
             // 1) Create Stripe Customer
-            // -----------------------------
             $customer = Customer::create([
                 'email' => $validated['email'],
                 'name'  => $validated['fullname'],
             ]);
 
-            // Attach PM to the customer & set as default
+            // Attach payment method
             $pmId = $validated['payment_method'];
             $pm   = PaymentMethod::retrieve($pmId);
 
             if (!empty($pm->customer) && $pm->customer !== $customer->id) {
-                // Extremely unlikely at registration, but just in case:
                 return response()->json([
                     'error'   => 'Payment method belongs to a different customer.',
                     'message' => 'Please use a different card.',
@@ -92,12 +89,10 @@ class AuthController extends Controller
                 ],
             ]);
 
-            // -------------------------------------
-            // 2) $1 upfront (registration fee)
-            // -------------------------------------
+            // 2) $1 registration fee
             InvoiceItem::create([
                 'customer'    => $customer->id,
-                'amount'      => 100, // $1
+                'amount'      => 100,
                 'currency'    => 'usd',
                 'description' => 'Initial registration fee',
             ]);
@@ -108,32 +103,23 @@ class AuthController extends Controller
             ]);
             $invoice->pay();
 
-            // -------------------------------------
             // 3) One-time $1 discount coupon
-            // -------------------------------------
             $coupon = Coupon::create([
                 'currency'   => 'usd',
-                'amount_off' => 100,   // $1 off
+                'amount_off' => 100,
                 'duration'   => 'once',
             ]);
 
-            // -------------------------------------
             // 4) Founding vs Post-Founding logic
-            // -------------------------------------
-            $today   = now();
-            $cutoff  = Carbon::create(2025, 12, 31, 23, 59, 59);
-            $isFounding = $today->lessThanOrEqualTo($cutoff);
+            $isFounding = now()->lessThanOrEqualTo(Carbon::create(2025, 12, 31, 23, 59, 59));
 
-            // Resolve price ID
             if ($isFounding) {
-                // Founding Members → only YEARLY pricing
-                $interval  = 'yearly';
-                $priceId   = $validated['role'] === 'novice'
+                $interval = 'yearly';
+                $priceId  = $validated['role'] === 'novice'
                     ? config('services.stripe.founding_novice_yearly')
                     : config('services.stripe.founding_trainer_yearly');
                 $memberType = 'founding';
             } else {
-                // Post Founding Members → monthly or yearly as chosen
                 $interval = $validated['interval'];
                 if ($validated['role'] === 'novice') {
                     $priceId = $interval === 'monthly'
@@ -147,48 +133,50 @@ class AuthController extends Controller
                 $memberType = 'post_founding';
             }
 
-            // -------------------------------------
-            // 5) Trial period (same as your code)
-            // -------------------------------------
-            // In production you may want 7 days; kept your 2-min sample here.
-            $trialEnd = now()->addMinutes(2)->timestamp;
-
-            // -------------------------------------
-            // 6) Create Stripe Subscription
-            // -------------------------------------
-            $stripeSub = StripeSubscription::create([
-                'customer' => $customer->id,
-                'items'    => [['price' => $priceId]],
-                'trial_end' => $trialEnd,
-                'discounts' => [['coupon' => $coupon->id]],
-                'expand'   => ['latest_invoice.payment_intent'],
-            ]);
-
-
-            // -------------------------------------
-            // 7) Create User (no subscription columns)
-            // -------------------------------------
-            $user = User::create([
-                'fullname'          => $validated['fullname'],
-                'email'             => $validated['email'],
-                'password'          => Hash::make($validated['password']),
-                'role'              => $validated['role'],   // app-level role
-                'type'              => User::ROLE_USER ?? 'user', // in case you use consts
-                'stripe_customer_id' => $customer->id,        // keep on users
-            ]);
-
-            
-            // -------------------------------------
-            // 8) Persist subscription in subscriptions table
-            // -------------------------------------
-
-
-            $currentPeriodEnd = $stripeSub->current_period_end ?? null;
-            if (!$currentPeriodEnd) {
-                $fresh = \Stripe\Subscription::retrieve($stripeSub->id);
-                $currentPeriodEnd = $fresh->current_period_end ?? null;
+            // 5) Trial period
+            if (app()->environment('production')) {
+                if ($isFounding) {
+                    // Founding members → maybe no trial, immediate billing
+                    $trialEnd = null;
+                } else {
+                    // Post-Founding members → 7-day trial
+                    $trialEnd = now()->addDays(7)->timestamp;
+                }
+            } else {
+                // Non-production (local/dev/staging) → short 2-minute trial for testing
+                $trialEnd = now()->addMinutes(2)->timestamp;
             }
 
+            // 6) Create Stripe Subscription
+            $stripeSub = \Stripe\Subscription::create([
+                'customer'  => $customer->id,
+                'items'     => [['price' => $priceId]],
+                'trial_end' => $trialEnd,
+                'discounts' => [['coupon' => $coupon->id]],
+                'expand'    => ['latest_invoice.payment_intent', 'items'],
+            ]);
+
+            // ✅ Fix: Resolve current_period_end properly
+            $currentPeriodEnd = $stripeSub->current_period_end
+                ?? ($stripeSub->items->data[0]->current_period_end ?? null);
+
+            if (!$currentPeriodEnd) {
+                $fresh = \Stripe\Subscription::retrieve($stripeSub->id, ['expand' => ['items']]);
+                $currentPeriodEnd = $fresh->current_period_end
+                    ?? ($fresh->items->data[0]->current_period_end ?? null);
+            }
+
+            // 7) Create User
+            $user = User::create([
+                'fullname'           => $validated['fullname'],
+                'email'              => $validated['email'],
+                'password'           => Hash::make($validated['password']),
+                'role'               => $validated['role'],
+                'type'               => User::ROLE_USER ?? 'user',
+                'stripe_customer_id' => $customer->id,
+            ]);
+
+            // 8) Save subscription in subscriptions table
             SubscriptionModel::create([
                 'user_id'                => $user->id,
                 'stripe_subscription_id' => $stripeSub->id,
@@ -196,42 +184,35 @@ class AuthController extends Controller
                 'plan'                   => $validated['role'],
                 'interval'               => $interval,
                 'status'                 => $stripeSub->status,
-                'trial_ends_at'          => \Carbon\Carbon::createFromTimestamp($trialEnd),
+                'trial_ends_at'          => Carbon::createFromTimestamp($trialEnd),
                 'current_period_end'     => $currentPeriodEnd
-                    ? \Carbon\Carbon::createFromTimestamp($currentPeriodEnd)
+                    ? Carbon::createFromTimestamp($currentPeriodEnd)
                     : null,
                 'membership_type'        => $memberType,
             ]);
 
-
             DB::commit();
 
-            // -------------------------------------
-            // 9) Emails
-            // -------------------------------------
+            // 9) Send emails
             try {
                 Mail::to($user->email)->send(new WelcomeMail($user));
-                // If your Mailable expects Stripe sub, this is fine:
                 Mail::to($user->email)->send(new SubscriptionActiveMail($user, $stripeSub));
             } catch (\Exception $mailError) {
                 \Log::error("Mail sending failed: " . $mailError->getMessage());
             }
 
-            // -------------------------------------
             // 10) Token + response
-            // -------------------------------------
             $token = $user->createToken('token')->plainTextToken;
 
             return response()->json([
-                'user'          => $user,
-                'token'         => $token,
-                'subscription'  => $stripeSub,
+                'user'            => $user,
+                'token'           => $token,
+                'subscription'    => $stripeSub,
                 'membership_type' => $isFounding ? 'Founding' : 'Post Founding',
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
 
-            // Best-effort Stripe cleanup if we already created the Customer
             if (!empty($customer?->id)) {
                 try {
                     $stripeCustomer = Customer::retrieve($customer->id);
