@@ -4,16 +4,20 @@ namespace App\Http\Controllers\api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+
+use App\Models\Subscription as SubscriptionModel; // Eloquent model
+
 use Stripe\Stripe;
-use Stripe\Subscription;
-use Stripe\Price;
+use Stripe\Subscription as StripeSubscription;
+use Stripe\Customer as StripeCustomer;
+use Stripe\PaymentMethod as StripePaymentMethod;
 
 class SubscriptionController extends Controller
 {
     /**
      * Map Stripe price IDs to human-readable plan names
      */
-    private function planMapping()
+    private function planMapping(): array
     {
         return [
             // Founding Plans
@@ -34,149 +38,198 @@ class SubscriptionController extends Controller
     public function show(Request $request)
     {
         $user = $request->user();
-        if (!$user->stripe_subscription_id) {
+        $sub  = $user->currentSubscription; // latest subscription row
+
+        if (!$sub || !$sub->stripe_subscription_id) {
             return response()->json(['active' => false]);
         }
 
         Stripe::setApiKey(config('services.stripe.secret'));
 
         try {
-            $subscription = Subscription::retrieve($user->stripe_subscription_id);
+            $remote = StripeSubscription::retrieve($sub->stripe_subscription_id);
+            $price  = $remote->items->data[0]->price ?? null;
 
-            // Get price object from subscription
-            $price = $subscription->items->data[0]->price;
-            $priceId = $price->id;
+            // Fallbacks from local snapshot if Stripe response is partial
+            $priceId = $price?->id ?? $sub->price_id;
+            $planName = $this->planMapping()[$priceId] ?? $sub->plan ?? $priceId;
 
-            // Map price ID → plan name
-            $planName = $this->planMapping()[$priceId] ?? $priceId;
-
-            // Format price
-            $amount = number_format($price->unit_amount / 100, 2);
-            $currency = strtoupper($price->currency);
+            $amount   = $price ? number_format($price->unit_amount / 100, 2) : null;
+            $currency = $price ? strtoupper($price->currency) : null;
 
             return response()->json([
-                'active' => in_array($subscription->status, ['active', 'trialing']),
-                'status' => $subscription->status,
-                'plan' => $planName,
-                'price' => $amount . ' ' . $currency, // ✅ Added price
-                'start_date' => date('Y-m-d H:i:s', $subscription->start_date),
-                'current_period_end' => date('Y-m-d H:i:s', $subscription->current_period_end),
-                'trial_end' => $subscription->trial_end ? date('Y-m-d H:i:s', $subscription->trial_end) : null,
-                'cancel_at' => $subscription->cancel_at ? date('Y-m-d H:i:s', $subscription->cancel_at) : null,
+                'active'             => in_array($remote->status, ['active', 'trialing']),
+                'status'             => $remote->status,
+                'plan'               => $planName,
+                'price'              => $amount && $currency ? ($amount . ' ' . $currency) : null,
+                'start_date'         => $remote->start_date ? date('Y-m-d H:i:s', $remote->start_date) : null,
+                'current_period_end' => $remote->current_period_end ? date('Y-m-d H:i:s', $remote->current_period_end) : null,
+                'trial_end'          => $remote->trial_end ? date('Y-m-d H:i:s', $remote->trial_end) : null,
+                'cancel_at'          => $remote->cancel_at ? date('Y-m-d H:i:s', $remote->cancel_at) : null,
             ]);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            // Stale/missing remote id → optionally mark local row as canceled
+            if (($e->getHttpStatus() === 404) || ($e->getError()?->code === 'resource_missing')) {
+                $sub->update(['status' => 'canceled', 'canceled_at' => now()]);
+                return response()->json(['active' => false]);
+            }
+            return response()->json(['error' => $e->getMessage()], 500);
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
 
-
     /**
-     * Cancel current user's subscription (end of billing cycle)
+     * Cancel current user's subscription immediately
      */
     public function cancel(Request $request)
     {
         $user = $request->user();
-        if (!$user->stripe_subscription_id) {
+        $sub  = $user->currentSubscription;
+
+        if (!$sub || !$sub->stripe_subscription_id) {
             return response()->json(['error' => 'No active subscription'], 400);
         }
 
-        \Stripe\Stripe::setApiKey(config('services.stripe.secret'));
+        Stripe::setApiKey(config('services.stripe.secret'));
 
         try {
-            // Cancel immediately
-            $subscription = \Stripe\Subscription::retrieve($user->stripe_subscription_id);
-            $subscription->delete();
+            $remote = StripeSubscription::retrieve($sub->stripe_subscription_id);
+            $remote->cancel(); // immediate cancel
 
-            $user->update(['subscription_status' => $subscription->status]);
+            $sub->update([
+                'status'      => $remote->status,
+                'canceled_at' => now(),
+            ]);
 
             return response()->json(['message' => 'Subscription cancelled successfully']);
+        } catch (\Stripe\Exception\InvalidRequestException $e) {
+            // If already missing in Stripe, still mark as canceled locally
+            if (($e->getHttpStatus() === 404) || ($e->getError()?->code === 'resource_missing')) {
+                $sub->update([
+                    'status'      => 'canceled',
+                    'canceled_at' => now(),
+                ]);
+                return response()->json(['message' => 'Subscription marked canceled (stale id)']);
+            }
+            return response()->json(['error' => $e->getMessage()], 500);
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         }
     }
 
-
+    /**
+     * Change plan immediately: attach PM, cancel old sub, create new sub, save new row
+     */
     public function changePlan(Request $request)
     {
         $validated = $request->validate([
-            'plan' => 'required|string|in:novice,trainer',
-            'interval' => 'nullable|string|in:monthly,yearly',
-            'payment_method' => 'required|string',
+            'plan'           => 'required|string|in:novice,trainer',
+            'interval'       => 'nullable|string|in:monthly,yearly',
+            'payment_method' => 'required|string', // pm_xxx from Stripe.js
         ]);
+
+        $user = $request->user();
+        if (empty($user->stripe_customer_id)) {
+            return response()->json(['error' => 'Customer not found for this user.'], 400);
+        }
 
         Stripe::setApiKey(config('services.stripe.secret'));
 
-        $user = $request->user();
-        $today = now();
-        $cutoff = \Carbon\Carbon::create(2025, 12, 31, 23, 59, 59);
-        $isFounding = $today->lessThanOrEqualTo($cutoff);
+        // Founding cutoff
+        $isFounding = now()->lessThanOrEqualTo(\Carbon\Carbon::create(2025, 12, 31, 23, 59, 59));
 
-        // ✅ Pick price ID
+        // Resolve price + interval
         if ($isFounding) {
-            $priceId = $validated['plan'] === 'novice'
+            $interval = 'yearly';
+            $priceId  = $validated['plan'] === 'novice'
                 ? config('services.stripe.founding_novice_yearly')
                 : config('services.stripe.founding_trainer_yearly');
-            $interval = 'yearly';
+            $membershipType = 'founding';
         } else {
+            $interval = $validated['interval'] ?? 'monthly';
             if ($validated['plan'] === 'novice') {
-                $priceId = $validated['interval'] === 'monthly'
+                $priceId = $interval === 'monthly'
                     ? config('services.stripe.post_novice_monthly')
                     : config('services.stripe.post_novice_yearly');
             } else {
-                $priceId = $validated['interval'] === 'monthly'
+                $priceId = $interval === 'monthly'
                     ? config('services.stripe.post_trainer_monthly')
                     : config('services.stripe.post_trainer_yearly');
             }
-            $interval = $validated['interval'];
+            $membershipType = 'post_founding';
         }
 
         try {
-            // ✅ Attach payment method & set as default
-            \Stripe\Customer::update($user->stripe_customer_id, [
-                'invoice_settings' => ['default_payment_method' => $validated['payment_method']],
+            $pmId = $validated['payment_method'];
+
+            // Attach PaymentMethod if needed & set default
+            $pm = StripePaymentMethod::retrieve($pmId);
+
+            if (!empty($pm->customer) && $pm->customer !== $user->stripe_customer_id) {
+                return response()->json(['error' => 'Payment method belongs to a different customer.'], 400);
+            }
+            if (empty($pm->customer)) {
+                $pm->attach(['customer' => $user->stripe_customer_id]);
+            }
+            StripeCustomer::update($user->stripe_customer_id, [
+                'invoice_settings' => ['default_payment_method' => $pmId],
             ]);
 
-
-            // // ✅ Cancel old subscription
-            // if ($user->stripe_subscription_id) {
-            //     \Stripe\Subscription::update($user->stripe_subscription_id, [
-            //         'cancel_at_period_end' => false,
-            //     ]);
-            //     \Stripe\Subscription::cancel($user->stripe_subscription_id);
-            // }
-
-            
-            // ✅ Cancel old subscription immediately
-            if ($user->stripe_subscription_id) {
-                $oldSubscription = \Stripe\Subscription::retrieve($user->stripe_subscription_id);
-                $oldSubscription->cancel();
+            // Cancel old subscription (if present)
+            $old = $user->currentSubscription;
+            if ($old && $old->stripe_subscription_id) {
+                try {
+                    $remoteOld = StripeSubscription::retrieve($old->stripe_subscription_id);
+                    $remoteOld->cancel();
+                    $old->update(['status' => $remoteOld->status, 'canceled_at' => now()]);
+                } catch (\Stripe\Exception\InvalidRequestException $e) {
+                    if (($e->getHttpStatus() === 404) || ($e->getError()?->code === 'resource_missing')) {
+                        $old->update(['status' => 'canceled', 'canceled_at' => now()]);
+                    } else {
+                        throw $e;
+                    }
+                }
             }
 
-
-            // ✅ Create new subscription
-            $subscription = \Stripe\Subscription::create([
+            // Create new subscription
+            $newStripeSub = StripeSubscription::create([
                 'customer' => $user->stripe_customer_id,
-                'items' => [['price' => $priceId]],
-                'expand' => ['latest_invoice.payment_intent'],
+                'items'    => [['price' => $priceId]],
+                'expand'   => ['latest_invoice.payment_intent'],
             ]);
 
-            // ✅ Update DB
-            $user->update([
-                'role' => $validated['plan'],
-                'stripe_subscription_id' => $subscription->id,
-                'subscription_price_id' => $priceId,
-                'subscription_interval' => $interval,
-                'subscription_status' => $subscription->status,
+            $currentPeriodEnd = $newStripeSub->current_period_end ?? null;
+            if (!$currentPeriodEnd) {
+                $fresh = \Stripe\Subscription::retrieve($newStripeSub->id);
+                $currentPeriodEnd = $fresh->current_period_end ?? null;
+            }
+
+            SubscriptionModel::create([
+                'user_id'                => $user->id,
+                'stripe_subscription_id' => $newStripeSub->id,
+                'price_id'               => $priceId,
+                'plan'                   => $validated['plan'],
+                'interval'               => $interval,
+                'status'                 => $newStripeSub->status,
+                'current_period_end'     => $currentPeriodEnd
+                    ? \Carbon\Carbon::createFromTimestamp($currentPeriodEnd)
+                    : null,
+                'membership_type'        => $membershipType,
             ]);
+
+
+            \Log::info('stripe sub', ['sub' => $newStripeSub]);
+
 
             return response()->json([
-                'message' => 'Plan updated successfully',
-                'subscription' => $subscription,
+                'message'       => 'Plan updated successfully',
+                'subscription'  => $newStripeSub,
                 'membership_type' => $isFounding ? 'Founding' : 'Post Founding',
             ]);
         } catch (\Exception $e) {
             return response()->json([
-                'error' => 'Plan change failed',
+                'error'   => 'Plan change failed',
                 'message' => $e->getMessage(),
             ], 500);
         }

@@ -24,20 +24,17 @@ class UserFactory extends Factory
     public function definition(): array
     {
         return [
-            'fullname' => fake()->name(),
-            'type' => 'admin', // default type
-            'role' => 'novice', // default role
-            'stripe_customer_id' => null,
-            'stripe_subscription_id' => null,
-            'trial_ends_at' => null,
-            'remember_token' => Str::random(10),
-            // Use the static password if set, otherwise generate a new one
-            'password' => static::$password ??= Hash::make('password'),
-            // Generate a unique email address
-            'email' => fake()->unique()->safeEmail(),
+            'fullname'          => $this->faker->name(),
+            'email'             => $this->faker->unique()->safeEmail(),
             'email_verified_at' => now(),
-            'password' => static::$password ??= Hash::make('password'),
-            'remember_token' => Str::random(10),
+            'password'          => static::$password ??= Hash::make('password'),
+            'remember_token'    => Str::random(10),
+
+            // App roles
+            'role'              => 'novice',
+            'type'              => 'admin',
+
+            'stripe_customer_id' => null,
         ];
     }
 
@@ -46,7 +43,7 @@ class UserFactory extends Factory
      */
     public function unverified(): static
     {
-        return $this->state(fn (array $attributes) => [
+        return $this->state(fn(array $attributes) => [
             'email_verified_at' => null,
         ]);
     }

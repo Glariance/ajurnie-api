@@ -4,15 +4,13 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
-    /**
-     * Run the migrations.
-     */
+return new class extends Migration {
     public function up(): void
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
+
+            // Profile
             $table->string('fullname');
             $table->string('email')->unique();
             $table->string('phone')->nullable();
@@ -26,27 +24,19 @@ return new class extends Migration
             $table->string('country')->nullable();
             $table->mediumText('bio')->nullable();
             $table->string('avatar')->nullable();
+
+            // Auth
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
 
-            // Roles and membership
-            $table->enum('role', ['novice', 'trainer']);
-            $table->enum('interval', ['monthly', 'yearly'])->default('yearly');
+            // App roles (keep if you use novice/trainer for app-level gating)
+            $table->enum('role', ['novice', 'trainer'])->default('novice');
             $table->enum('type', ['admin', 'user'])->default('user');
-            $table->boolean('is_paid')->default(false);
 
-            // Stripe fields
-            $table->string('stripe_customer_id')->nullable();
-            $table->string('stripe_subscription_id')->nullable();
-            $table->string('subscription_status')->nullable(); // active, trialing, canceled
-            $table->string('subscription_price_id')->nullable(); // price_xxx from Stripe
-            $table->enum('subscription_interval', ['monthly', 'yearly'])->nullable();
-            $table->timestamp('trial_ends_at')->nullable();
+            // Stripe customer id (OK to keep on users)
+            $table->string('stripe_customer_id')->nullable()->index();
 
-            // Payment method info
-            $table->string('payment_method')->nullable(); // pm_xxx
-            $table->string('price_id')->nullable(); // also store directly if needed
-
+            // Tokens & timestamps
             $table->rememberToken();
             $table->timestamps();
         });
@@ -67,17 +57,11 @@ return new class extends Migration
         });
     }
 
-
-
-
-
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
-        Schema::dropIfExists('users');
-        Schema::dropIfExists('password_reset_tokens');
         Schema::dropIfExists('sessions');
+        Schema::dropIfExists('password_reset_tokens');
+        Schema::dropIfExists('users');
     }
+
 };

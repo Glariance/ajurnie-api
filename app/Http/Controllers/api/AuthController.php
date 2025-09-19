@@ -4,169 +4,237 @@ namespace App\Http\Controllers\api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+
 use App\Models\User;
+use App\Models\Subscription as SubscriptionModel; // ⬅️ Eloquent model
+
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Stripe\Stripe;
-use Stripe\Customer;
-use Stripe\Subscription;
-use Stripe\InvoiceItem;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Facades\Storage;
+
 use App\Mail\SubscriptionActiveMail;
 use App\Mail\WelcomeMail;
 use App\Mail\ResetPasswordMail;
-use Illuminate\Validation\Rule;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
+
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Password;
+
+// Stripe SDK
+use Stripe\Stripe;
+use Stripe\Customer;
+use Stripe\InvoiceItem;
+use Stripe\PaymentMethod;
+use Stripe\Subscription as StripeSubscription;
+use Stripe\Coupon;
+use Stripe\Invoice;
 
 class AuthController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Just a simple ping.
      */
     public function index()
     {
-        // dd(env('OPENAI_API_KEY'));
-        //
         return response()->json([
             'Welcome to the authentication API from index method',
-            // app()->environment()
         ]);
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Register (create user + Stripe customer + subscription).
+     * Persists subscription in `subscriptions` table (not on users).
      */
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'fullname' => 'required|string|max:255',
-            'email' => 'required|string|email|unique:users',
-            'password' => 'required|string|min:6|confirmed',
-            'role' => 'required|string|in:novice,trainer',
-            'payment_method' => 'required|string',
-            'interval' => 'string|in:monthly,yearly', // 👈 new field to pick interval
+            'fullname'         => 'required|string|max:255',
+            'email'            => 'required|string|email|unique:users,email',
+            'password'         => 'required|string|min:6|confirmed',
+            'role'             => 'required|string|in:novice,trainer',
+            'payment_method'   => 'required|string',                 // pm_xxx from Stripe.js
+            'interval'         => 'required|string|in:monthly,yearly', // for post-founding; will be overridden to yearly during founding
         ]);
 
         Stripe::setApiKey(config('services.stripe.secret'));
-
         DB::beginTransaction();
 
+        $customer = null;
+
         try {
-            // ✅ Step 1: Create Stripe customer
+            // -----------------------------
+            // 1) Create Stripe Customer
+            // -----------------------------
             $customer = Customer::create([
                 'email' => $validated['email'],
                 'name'  => $validated['fullname'],
-                'payment_method' => $validated['payment_method'],
+            ]);
+
+            // Attach PM to the customer & set as default
+            $pmId = $validated['payment_method'];
+            $pm   = PaymentMethod::retrieve($pmId);
+
+            if (!empty($pm->customer) && $pm->customer !== $customer->id) {
+                // Extremely unlikely at registration, but just in case:
+                return response()->json([
+                    'error'   => 'Payment method belongs to a different customer.',
+                    'message' => 'Please use a different card.',
+                ], 400);
+            }
+
+            if (empty($pm->customer)) {
+                $pm->attach(['customer' => $customer->id]);
+            }
+
+            Customer::update($customer->id, [
                 'invoice_settings' => [
-                    'default_payment_method' => $validated['payment_method'],
+                    'default_payment_method' => $pmId,
                 ],
             ]);
 
-            // ✅ Step 2: Charge $1 upfront (registration fee)
+            // -------------------------------------
+            // 2) $1 upfront (registration fee)
+            // -------------------------------------
             InvoiceItem::create([
-                'customer' => $customer->id,
-                'amount' => 100, // $1
-                'currency' => 'usd',
+                'customer'    => $customer->id,
+                'amount'      => 100, // $1
+                'currency'    => 'usd',
                 'description' => 'Initial registration fee',
             ]);
 
-            $invoice = \Stripe\Invoice::create([
-                'customer' => $customer->id,
+            $invoice = Invoice::create([
+                'customer'     => $customer->id,
                 'auto_advance' => true,
             ]);
             $invoice->pay();
 
-            // ✅ Step 3: Create one-time $1 discount coupon
-            $coupon = \Stripe\Coupon::create([
-                'currency' => 'usd',
+            // -------------------------------------
+            // 3) One-time $1 discount coupon
+            // -------------------------------------
+            $coupon = Coupon::create([
+                'currency'   => 'usd',
                 'amount_off' => 100,   // $1 off
-                'duration' => 'once',  // apply only to first subscription invoice
+                'duration'   => 'once',
             ]);
 
-            // ✅ Step 4: Determine if user is Founding or Post Founding
-            $today = now();
-            $cutoff = \Carbon\Carbon::create(2025, 12, 31, 23, 59, 59);
+            // -------------------------------------
+            // 4) Founding vs Post-Founding logic
+            // -------------------------------------
+            $today   = now();
+            $cutoff  = Carbon::create(2025, 12, 31, 23, 59, 59);
             $isFounding = $today->lessThanOrEqualTo($cutoff);
 
-            // ✅ Step 5: Pick correct price ID
+            // Resolve price ID
             if ($isFounding) {
-                // Founding Members → only yearly available
-                if ($validated['role'] === 'novice') {
-                    $priceId = config('services.stripe.founding_novice_yearly');
-                } else {
-                    $priceId = config('services.stripe.founding_trainer_yearly');
-                }
+                // Founding Members → only YEARLY pricing
+                $interval  = 'yearly';
+                $priceId   = $validated['role'] === 'novice'
+                    ? config('services.stripe.founding_novice_yearly')
+                    : config('services.stripe.founding_trainer_yearly');
+                $memberType = 'founding';
             } else {
-                // Post Founding Members → both monthly & yearly available
+                // Post Founding Members → monthly or yearly as chosen
+                $interval = $validated['interval'];
                 if ($validated['role'] === 'novice') {
-                    $priceId = $validated['interval'] === 'monthly'
+                    $priceId = $interval === 'monthly'
                         ? config('services.stripe.post_novice_monthly')
                         : config('services.stripe.post_novice_yearly');
                 } else {
-                    $priceId = $validated['interval'] === 'monthly'
+                    $priceId = $interval === 'monthly'
                         ? config('services.stripe.post_trainer_monthly')
                         : config('services.stripe.post_trainer_yearly');
                 }
+                $memberType = 'post_founding';
             }
 
-            // ✅ Step 6: Trial period
-            // $trialEnd = app()->environment('production')
-            //     ? now()->addDays(7)->timestamp
-            //     : now()->addMinutes(2)->timestamp;
-
+            // -------------------------------------
+            // 5) Trial period (same as your code)
+            // -------------------------------------
+            // In production you may want 7 days; kept your 2-min sample here.
             $trialEnd = now()->addMinutes(2)->timestamp;
 
-            $subscription = Subscription::create([
+            // -------------------------------------
+            // 6) Create Stripe Subscription
+            // -------------------------------------
+            $stripeSub = StripeSubscription::create([
                 'customer' => $customer->id,
-                'items' => [['price' => $priceId]],
+                'items'    => [['price' => $priceId]],
                 'trial_end' => $trialEnd,
                 'discounts' => [['coupon' => $coupon->id]],
-                'expand' => ['latest_invoice.payment_intent'],
+                'expand'   => ['latest_invoice.payment_intent'],
             ]);
 
-            // ✅ Step 7: Save user in DB
+
+            // -------------------------------------
+            // 7) Create User (no subscription columns)
+            // -------------------------------------
             $user = User::create([
-                'fullname' => $validated['fullname'],
-                'email' => $validated['email'],
-                'password' => Hash::make($validated['password']),
-                'role' => $validated['role'],
-                'type' => User::ROLE_USER,
-                'stripe_customer_id' => $customer->id,
-                'stripe_subscription_id' => $subscription->id,
-                'subscription_status' => $subscription->status,
-                'subscription_price_id' => $priceId,
-                'subscription_interval' => $validated['interval'],
-                'trial_ends_at' => date('Y-m-d H:i:s', $trialEnd),
+                'fullname'          => $validated['fullname'],
+                'email'             => $validated['email'],
+                'password'          => Hash::make($validated['password']),
+                'role'              => $validated['role'],   // app-level role
+                'type'              => User::ROLE_USER ?? 'user', // in case you use consts
+                'stripe_customer_id' => $customer->id,        // keep on users
             ]);
+
+            
+            // -------------------------------------
+            // 8) Persist subscription in subscriptions table
+            // -------------------------------------
+
+
+            $currentPeriodEnd = $stripeSub->current_period_end ?? null;
+            if (!$currentPeriodEnd) {
+                $fresh = \Stripe\Subscription::retrieve($stripeSub->id);
+                $currentPeriodEnd = $fresh->current_period_end ?? null;
+            }
+
+            SubscriptionModel::create([
+                'user_id'                => $user->id,
+                'stripe_subscription_id' => $stripeSub->id,
+                'price_id'               => $priceId,
+                'plan'                   => $validated['role'],
+                'interval'               => $interval,
+                'status'                 => $stripeSub->status,
+                'trial_ends_at'          => \Carbon\Carbon::createFromTimestamp($trialEnd),
+                'current_period_end'     => $currentPeriodEnd
+                    ? \Carbon\Carbon::createFromTimestamp($currentPeriodEnd)
+                    : null,
+                'membership_type'        => $memberType,
+            ]);
+
 
             DB::commit();
 
-            // ✅ Step 8: Send Emails
+            // -------------------------------------
+            // 9) Emails
+            // -------------------------------------
             try {
                 Mail::to($user->email)->send(new WelcomeMail($user));
-                Mail::to($user->email)->send(new SubscriptionActiveMail($user, $subscription));
+                // If your Mailable expects Stripe sub, this is fine:
+                Mail::to($user->email)->send(new SubscriptionActiveMail($user, $stripeSub));
             } catch (\Exception $mailError) {
                 \Log::error("Mail sending failed: " . $mailError->getMessage());
             }
 
+            // -------------------------------------
+            // 10) Token + response
+            // -------------------------------------
             $token = $user->createToken('token')->plainTextToken;
 
             return response()->json([
-                'user' => $user,
-                'token' => $token,
-                'subscription' => $subscription,
+                'user'          => $user,
+                'token'         => $token,
+                'subscription'  => $stripeSub,
                 'membership_type' => $isFounding ? 'Founding' : 'Post Founding',
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
 
-            if (!empty($customer->id)) {
+            // Best-effort Stripe cleanup if we already created the Customer
+            if (!empty($customer?->id)) {
                 try {
-                    $stripeCustomer = \Stripe\Customer::retrieve($customer->id);
+                    $stripeCustomer = Customer::retrieve($customer->id);
                     $stripeCustomer->delete();
                 } catch (\Exception $cleanupError) {
                     \Log::error("Stripe cleanup failed: " . $cleanupError->getMessage());
@@ -174,14 +242,15 @@ class AuthController extends Controller
             }
 
             return response()->json([
-                'error' => 'Registration failed',
+                'error'   => 'Registration failed',
                 'message' => $e->getMessage(),
             ], 500);
         }
     }
 
-
-
+    /**
+     * Lightweight user profile for your SPA.
+     */
     public function getUser(Request $request)
     {
         $u = $request->user();
@@ -191,7 +260,7 @@ class AuthController extends Controller
             'fullname'  => $u->fullname,
             'email'     => $u->email,
             'phone'     => $u->phone,
-            'dob'       => $u->dob, // cast to 'date:Y-m-d' in model if you want strict format
+            'dob'       => $u->dob, // format via model cast if you prefer
             'gender'    => $u->gender,
             'address1'  => $u->address1,
             'address2'  => $u->address2,
@@ -204,23 +273,13 @@ class AuthController extends Controller
         ]);
     }
 
-
+    /**
+     * Partial user update (no email change unless explicitly allowed).
+     */
     public function updateUser(Request $request)
     {
-
-        // return response()->json([
-        //     'input'     => $request->except('avatar'),   // shows JSON fields
-        //     'hasAvatar' => $request->hasFile('avatar'),  // true/false
-        //     'files'     => $request->file('avatar') ? [
-        //         'original' => $request->file('avatar')->getClientOriginalName(),
-        //         'size'     => $request->file('avatar')->getSize(),
-        //         'mime'     => $request->file('avatar')->getMimeType(),
-        //     ] : null,
-        // ]);
-
         $user = $request->user();
 
-        // Validate (email intentionally excluded)
         $validated = $request->validate([
             'fullname' => ['sometimes', 'required', 'string', 'max:255'],
             'phone'    => ['sometimes', 'nullable', 'string', 'max:255'],
@@ -236,7 +295,7 @@ class AuthController extends Controller
             'avatar'   => ['sometimes', 'nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
         ]);
 
-        // Handle avatar upload if provided
+        // Handle avatar
         if ($request->hasFile('avatar')) {
             if ($user->avatar) {
                 Storage::disk('public')->delete($user->avatar);
@@ -245,15 +304,14 @@ class AuthController extends Controller
             $validated['avatar'] = $path;
         }
 
-        // Persist only validated keys
         $user->fill($validated)->save();
 
         return response()->json([
             'id'        => $user->id,
             'fullname'  => $user->fullname,
-            'email'     => $user->email, // read-only
+            'email'     => $user->email,
             'phone'     => $user->phone,
-            'dob'       => $user->dob,   // cast to Y-m-d in model if desired
+            'dob'       => $user->dob,
             'gender'    => $user->gender,
             'address1'  => $user->address1,
             'address2'  => $user->address2,
@@ -266,13 +324,13 @@ class AuthController extends Controller
         ]);
     }
 
-
-
+    /**
+     * Login → returns API token + user.
+     */
     public function login(Request $request)
     {
-
         $fields = $request->validate([
-            'email' => 'required|string|email',
+            'email'    => 'required|string|email',
             'password' => 'required|string'
         ]);
 
@@ -285,7 +343,7 @@ class AuthController extends Controller
         $token = $user->createToken('token')->plainTextToken;
 
         return response()->json([
-            'user' => $user,
+            'user'  => $user,
             'token' => $token
         ], 200);
     }
@@ -298,17 +356,17 @@ class AuthController extends Controller
     public function logout(Request $request)
     {
         $request->user()->currentAccessToken()->delete();
-
         return response()->json(['message' => 'Logged out'], 200);
     }
 
-
+    /**
+     * Change password (simple).
+     */
     public function changePassword(Request $request)
     {
-
         $validated = $request->validate([
             'current_password' => 'required|string',
-            'new_password' => 'required|string|min:6|confirmed',
+            'new_password'     => 'required|string|min:6|confirmed',
         ]);
 
         $user = $request->user();
@@ -323,11 +381,14 @@ class AuthController extends Controller
         return response()->json(['message' => 'Password changed successfully'], 200);
     }
 
+    /**
+     * Minimal profile update endpoint (if you keep it).
+     */
     public function updateProfile(Request $request)
     {
         $validated = $request->validate([
             'fullname' => 'sometimes|required|string|max:255',
-            'email' => 'sometimes|required|string|email|unique:users,email,' . $request->user()->id,
+            'email'    => 'sometimes|required|string|email|unique:users,email,' . $request->user()->id,
         ]);
 
         $user = $request->user();
@@ -341,36 +402,40 @@ class AuthController extends Controller
 
         $user->save();
 
-        return response()->json(['message' => 'Profile updated successfully', 'user' => $user], 200);
+        return response()->json([
+            'message' => 'Profile updated successfully',
+            'user'    => $user
+        ], 200);
     }
 
-
+    /**
+     * Forgot password → send reset link (SPA flow).
+     */
     public function forgotPassword(Request $request)
     {
         $request->validate(['email' => 'required|email']);
 
         $user = User::where('email', $request->input('email'))->first();
 
-        // Optional: if you want an error toast for unknown emails, return 404 with message here.
         if (!$user) {
             return response()->json([
                 'message' => "We couldn't find an account with that email. Double-check the address or create a new one."
             ], 404);
         }
 
-        // Create a broker token compatible with Password::reset()
         $token = Password::createToken($user);
 
-        // Build SPA URL: /reset-password?token=...&email=...
         $spa = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
         $url = $spa . '/reset-password?token=' . urlencode($token) . '&email=' . urlencode($user->email);
 
-        // Send your custom Mailable
         Mail::to($user->email)->send(new ResetPasswordMail($user, $url));
 
         return response()->json(['message' => 'If that email exists, a reset link was sent.']);
     }
 
+    /**
+     * Reset password (SPA flow).
+     */
     public function resetPassword(Request $request)
     {
         $request->validate([
@@ -383,7 +448,6 @@ class AuthController extends Controller
             $request->only('email', 'password', 'password_confirmation', 'token'),
             function ($user, $password) {
                 $user->forceFill(['password' => Hash::make($password)])->save();
-                // Optional: fire events, revoke tokens, etc.
             }
         );
 
@@ -391,5 +455,4 @@ class AuthController extends Controller
             ? response()->json(['message' => 'Password updated.'])
             : response()->json(['message' => __($status)], 422);
     }
-
 }

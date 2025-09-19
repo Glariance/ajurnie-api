@@ -31,6 +31,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('store-goal', [GoalController::class, 'store']);
     Route::get('subscription', [SubscriptionController::class, 'show']);
     Route::post('subscription/cancel', [SubscriptionController::class, 'cancel']);
+    Route::post('change-plan', [SubscriptionController::class, 'changePlan']);
     Route::post('change-password', [AuthController::class, 'changePassword']);
 });
 

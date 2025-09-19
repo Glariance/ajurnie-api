@@ -31,6 +31,8 @@ class User extends Authenticatable
         'interval',
         'type',
         'is_paid',
+
+        // Profile info
         'phone',
         'dob',
         'gender',
@@ -42,16 +44,14 @@ class User extends Authenticatable
         'country',
         'bio',
         'avatar',
+
+        // Stripe customer identifier (keep only this one!)
         'stripe_customer_id',
-        'stripe_subscription_id',
-        'subscription_status',
-        'subscription_price_id',
-        'subscription_interval',
-        'trial_ends_at',
+
+        // Auth/session
         'remember_token',
-        'payment_method', // Stripe payment method ID
-        'price_id', // Price ID for the subscription
     ];
+
 
     /**
      * The attributes that should be hidden for serialization.
@@ -75,5 +75,20 @@ class User extends Authenticatable
             'password' => 'hashed',
             'dob' => 'date:Y-m-d',
         ];
+    }
+
+
+    public function subscriptions()
+    {
+        return $this->hasMany(\App\Models\Subscription::class);
+    }
+    public function currentSubscription()
+    {
+        return $this->hasOne(\App\Models\Subscription::class)->latestOfMany();
+    }
+
+    public function paymentMethods()
+    {
+        return $this->hasMany(PaymentMethod::class);
     }
 }
