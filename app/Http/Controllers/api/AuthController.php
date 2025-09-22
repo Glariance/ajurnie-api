@@ -184,7 +184,9 @@ class AuthController extends Controller
                 'plan'                   => $validated['role'],
                 'interval'               => $interval,
                 'status'                 => $stripeSub->status,
-                'trial_ends_at'          => Carbon::createFromTimestamp($trialEnd),
+                'trial_ends_at' => $trialEnd
+                    ? Carbon::createFromTimestamp($trialEnd)
+                    : null,
                 'current_period_end'     => $currentPeriodEnd
                     ? Carbon::createFromTimestamp($currentPeriodEnd)
                     : null,

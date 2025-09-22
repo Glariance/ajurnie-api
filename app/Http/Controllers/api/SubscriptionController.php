@@ -225,6 +225,9 @@ class SubscriptionController extends Controller
                 'plan'                   => $validated['plan'],
                 'interval'               => $interval,
                 'status'                 => $newStripeSub->status,
+                'trial_ends_at'          => $newStripeSub->trial_end
+                    ? \Carbon\Carbon::createFromTimestamp($newStripeSub->trial_end)
+                    : null,
                 'current_period_end'     => $currentPeriodEnd
                     ? \Carbon\Carbon::createFromTimestamp($currentPeriodEnd)
                     : null,
